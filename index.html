@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dino Runner: Atak Arbuzów</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #f7f7f7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Courier New', Courier, monospace;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    user-select: none;
+  }
+  h1 {
+    font-size: 18px;
+    color: #535353;
+    margin: 0;
+    letter-spacing: 1px;
+  }
+  #gameCanvas {
+    border: 1px solid #535353;
+    background: #f7f7f7;
+    display: block;
+    touch-action: manipulation;
+  }
+  #hint {
+    color: #999;
+    font-size: 13px;
+  }
+  #stage {
+    position: relative;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #535353;
+    background: rgba(247,247,247,0.85);
+    font-size: 16px;
+    text-align: center;
+    gap: 8px;
+  }
+  #overlay b { font-size: 22px; }
+  #modeTag {
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>🦖 DINO RUNNER — <span id="modeTag">TRYB: KAKTUSY</span></h1>
+  <div id="stage">
+    <canvas id="gameCanvas" width="600" height="200"></canvas>
+    <div id="overlay">
+      <b>GAME OVER</b>
+      <div id="finalScore"></div>
+      <div>Naciśnij SPACJĘ lub dotknij ekranu, aby zagrać ponownie</div>
+    </div>
+  </div>
+  <div id="hint">SPACJA / STRZAŁKA W GÓRĘ = skok • STRZAŁKA W DÓŁ = kucnięcie • Po ~500 pkt kaktusy zamieniają się w kolczaste arbuzy!</div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const GROUND_Y = 160;
+
+  const overlay = document.getElementById('overlay');
+  const finalScoreEl = document.getElementById('finalScore');
+  const modeTag = document.getElementById('modeTag');
+
+  const WATERMELON_SCORE_THRESHOLD = 500;
+
+  let highScore = parseInt(localStorage.getItem('dinoWatermelonHighScore') || '0', 10);
+
+  let state, dino, obstacles, clouds, groundOffset, score, speed, spawnTimer, running, gameOverFlag, watermelonMode, frame;
+
+  function resetGame() {
+    dino = {
+      x: 50,
+      y: GROUND_Y - 44,
+      w: 40,
+      h: 44,
+      duckH: 26,
+      vy: 0,
+      jumping: false,
+      ducking: false,
+      groundY: GROUND_Y - 44
+    };
+    obstacles = [];
+    clouds = [];
+    for (let i = 0; i < 3; i++) {
+      clouds.push({ x: Math.random() * W, y: 20 + Math.random() * 50 });
+    }
+    groundOffset = 0;
+    score = 0;
+    speed = 6;
+    spawnTimer = 60;
+    running = true;
+    gameOverFlag = false;
+    watermelonMode = false;
+    frame = 0;
+    modeTag.textContent = 'TRYB: KAKTUSY';
+    overlay.style.display = 'none';
+  }
+
+  const GRAVITY = 0.9;
+  const JUMP_VELOCITY = -14.5;
+
+  function jump() {
+    if (!dino.jumping && running) {
+      dino.vy = JUMP_VELOCITY;
+      dino.jumping = true;
+    }
+  }
+
+  function setDuck(v) {
+    if (!running) return;
+    dino.ducking = v && !dino.jumping;
+  }
+
+  function spawnObstacle() {
+    const isBird = watermelonMode ? Math.random() < 0.25 : Math.random() < 0.2;
+    if (isBird) {
+      obstacles.push({
+        type: 'bird',
+        x: W + 20,
+        y: [GROUND_Y - 90, GROUND_Y - 55, GROUND_Y - 20][Math.floor(Math.random() * 3)],
+        w: 34,
+        h: 24,
+        wingUp: true
+      });
+    } else if (watermelonMode) {
+      const size = 34 + Math.random() * 12;
+      obstacles.push({
+        type: 'watermelon',
+        x: W + 20,
+        y: GROUND_Y - size,
+        w: size,
+        h: size
+      });
+    } else {
+      const clusters = Math.random() < 0.3 ? 2 : 1;
+      let ox = W + 20;
+      for (let i = 0; i < clusters; i++) {
+        const h = 30 + Math.random() * 20;
+        obstacles.push({
+          type: 'cactus',
+          x: ox,
+          y: GROUND_Y - h,
+          w: 18,
+          h: h
+        });
+        ox += 22;
+      }
+    }
+  }
+
+  function rectsOverlap(a, b) {
+    return a.x < b.x + b.w &&
+           a.x + a.w > b.x &&
+           a.y < b.y + b.h &&
+           a.y + a.h > b.y;
+  }
+
+  function update() {
+    frame++;
+    score += 0.12;
+    if (Math.floor(score) % 100 === 0) {
+      speed = 6 + Math.floor(score / 150) * 0.6;
+    }
+
+    if (!watermelonMode && score >= WATERMELON_SCORE_THRESHOLD) {
+      watermelonMode = true;
+      obstacles = obstacles.filter(o => o.type !== 'cactus');
+      modeTag.textContent = 'TRYB: KOLCZASTE ARBUZY 🍉';
+    }
+
+    dino.vy += GRAVITY;
+    dino.y += dino.vy;
+    if (dino.y >= dino.groundY) {
+      dino.y = dino.groundY;
+      dino.vy = 0;
+      dino.jumping = false;
+    }
+
+    groundOffset -= speed;
+    if (groundOffset <= -20) groundOffset += 20;
+
+    clouds.forEach(c => {
+      c.x -= speed * 0.2;
+      if (c.x < -60) { c.x = W + Math.random() * 100; c.y = 20 + Math.random() * 50; }
+    });
+
+    spawnTimer -= 1;
+    if (spawnTimer <= 0) {
+      spawnObstacle();
+      spawnTimer = 55 + Math.random() * 55 - Math.min(speed * 3, 40);
+      if (spawnTimer < 30) spawnTimer = 30;
+    }
+
+    obstacles.forEach(o => { o.x -= speed; if (o.type === 'bird' && frame % 10 === 0) o.wingUp = !o.wingUp; });
+    obstacles = obstacles.filter(o => o.x + o.w > -10);
+
+    const dinoBox = {
+      x: dino.x + 6,
+      y: dino.ducking ? GROUND_Y - dino.duckH + 4 : dino.y + 4,
+      w: dino.w - 12,
+      h: (dino.ducking ? dino.duckH : dino.h) - 8
+    };
+
+    for (const o of obstacles) {
+      const obox = { x: o.x + 3, y: o.y + 3, w: o.w - 6, h: o.h - 6 };
+      if (rectsOverlap(dinoBox, obox)) {
+        endGame();
+        break;
+      }
+    }
+  }
+
+  function endGame() {
+    running = false;
+    gameOverFlag = true;
+    const finalScore = Math.floor(score);
+    if (finalScore > highScore) {
+      highScore = finalScore;
+      localStorage.setItem('dinoWatermelonHighScore', String(highScore));
+    }
+    finalScoreEl.textContent = `Wynik: ${finalScore}   |   Rekord: ${highScore}`;
+    overlay.style.display = 'flex';
+  }
+
+  // ---- Drawing ----
+  function drawGround() {
+    ctx.strokeStyle = '#535353';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_Y);
+    ctx.lineTo(W, GROUND_Y);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    for (let x = groundOffset; x < W; x += 20) {
+      ctx.beginPath();
+      ctx.moveTo(x, GROUND_Y + 4);
+      ctx.lineTo(x + 8, GROUND_Y + 4);
+      ctx.stroke();
+    }
+  }
+
+  function drawClouds() {
+    ctx.strokeStyle = '#c9c9c9';
+    ctx.lineWidth = 2;
+    clouds.forEach(c => {
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(c.x + 30, c.y);
+      ctx.moveTo(c.x + 6, c.y - 6);
+      ctx.lineTo(c.x + 24, c.y - 6);
+      ctx.stroke();
+    });
+  }
+
+  function drawDino() {
+    ctx.fillStyle = '#535353';
+    if (dino.ducking) {
+      const y = GROUND_Y - dino.duckH;
+      ctx.fillRect(dino.x - 4, y, dino.w + 14, dino.duckH);
+      ctx.fillRect(dino.x + dino.w + 6, y + 4, 10, 8);
+      ctx.fillStyle = '#f7f7f7';
+      ctx.fillRect(dino.x + dino.w + 8, y + 6, 3, 3);
+    } else {
+      const x = dino.x, y = dino.y, w = dino.w, h = dino.h;
+      ctx.fillRect(x, y, w - 10, h);
+      ctx.fillRect(x + w - 18, y - 6, 14, 16);
+      ctx.fillStyle = '#f7f7f7';
+      ctx.fillRect(x + w - 9, y - 2, 3, 3);
+      ctx.fillStyle = '#535353';
+      let legOffset = running && !dino.jumping ? (frame % 20 < 10 ? 0 : 6) : 0;
+      ctx.fillRect(x + 4 + legOffset, y + h - 8, 6, 8);
+      ctx.fillRect(x + w - 20 - legOffset, y + h - 8, 6, 8);
+      ctx.fillRect(x - 6, y + 10, 8, 4);
+    }
+  }
+
+  function drawCactus(o) {
+    ctx.fillStyle = '#3f7d3f';
+    ctx.fillRect(o.x + o.w / 2 - 4, o.y, 8, o.h);
+    ctx.fillRect(o.x, o.y + o.h * 0.35, o.w * 0.4, 8);
+    ctx.fillRect(o.x + o.w * 0.6, o.y + o.h * 0.5, o.w * 0.4, 8);
+  }
+
+  function drawWatermelon(o) {
+    const cx = o.x + o.w / 2, cy = o.y + o.h / 2, r = o.w / 2;
+    ctx.save();
+    ctx.translate(cx, cy);
+    // spikes
+    ctx.fillStyle = '#2c6e2c';
+    const spikeCount = 10;
+    for (let i = 0; i < spikeCount; i++) {
+      const ang = (i / spikeCount) * Math.PI * 2;
+      const baseA = ang - 0.15, baseB = ang + 0.15;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(baseA) * r * 0.85, Math.sin(baseA) * r * 0.85);
+      ctx.lineTo(Math.cos(ang) * r * 1.5, Math.sin(ang) * r * 1.5);
+      ctx.lineTo(Math.cos(baseB) * r * 0.85, Math.sin(baseB) * r * 0.85);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // body
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.9, 0, Math.PI * 2);
+    ctx.fillStyle = '#3f9142';
+    ctx.fill();
+    ctx.strokeStyle = '#2c6e2c';
+    ctx.lineWidth = 2;
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * (r * 0.28), -r * 0.8);
+      ctx.quadraticCurveTo(i * (r * 0.28) + (i * 4), 0, i * (r * 0.28), r * 0.8);
+      ctx.stroke();
+    }
+    // angry eyes
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.35, -r * 0.15);
+    ctx.lineTo(-r * 0.05, -r * 0.05);
+    ctx.lineTo(-r * 0.35, r * 0.05);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(r * 0.35, -r * 0.15);
+    ctx.lineTo(r * 0.05, -r * 0.05);
+    ctx.lineTo(r * 0.35, r * 0.05);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBird(o) {
+    ctx.fillStyle = '#535353';
+    const y = o.wingUp ? o.y - 6 : o.y + 6;
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y + 10);
+    ctx.lineTo(o.x + 14, y);
+    ctx.lineTo(o.x + 22, o.y + 10);
+    ctx.lineTo(o.x + 34, y);
+    ctx.lineTo(o.x + 20, o.y + 14);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawObstacles() {
+    obstacles.forEach(o => {
+      if (o.type === 'cactus') drawCactus(o);
+      else if (o.type === 'watermelon') drawWatermelon(o);
+      else if (o.type === 'bird') drawBird(o);
+    });
+  }
+
+  function drawScore() {
+    ctx.fillStyle = '#535353';
+    ctx.font = '14px "Courier New", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`WYNIK: ${String(Math.floor(score)).padStart(5, '0')}`, W - 10, 20);
+    ctx.fillText(`REKORD: ${String(highScore).padStart(5, '0')}`, W - 10, 38);
+    ctx.textAlign = 'left';
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    drawClouds();
+    drawGround();
+    drawObstacles();
+    drawDino();
+    drawScore();
+  }
+
+  function loop() {
+    if (running) {
+      update();
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---- Input ----
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      if (!running && gameOverFlag) {
+        resetGame();
+      } else {
+        jump();
+      }
+    } else if (e.code === 'ArrowDown') {
+      e.preventDefault();
+      setDuck(true);
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'ArrowDown') setDuck(false);
+  });
+
+  canvas.addEventListener('pointerdown', () => {
+    if (!running && gameOverFlag) {
+      resetGame();
+    } else {
+      jump();
+    }
+  });
+  overlay.addEventListener('pointerdown', () => {
+    if (!running && gameOverFlag) resetGame();
+  });
+
+  resetGame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
