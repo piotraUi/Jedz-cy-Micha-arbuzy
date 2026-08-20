@@ -403,9 +403,20 @@
     if (gameOverFlag) drawGameOver();
   }
 
-  function loop() {
-    if (running) {
-      update();
+  const STEP_MS = 1000 / 60;
+  const MAX_DELTA_MS = 250; // avoid spiral of death after tab is backgrounded
+  let lastTime = 0;
+  let accumulator = 0;
+
+  function loop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    let delta = timestamp - lastTime;
+    lastTime = timestamp;
+    if (delta > MAX_DELTA_MS) delta = MAX_DELTA_MS;
+    accumulator += delta;
+    while (accumulator >= STEP_MS) {
+      if (running) update();
+      accumulator -= STEP_MS;
     }
     draw();
     requestAnimationFrame(loop);
