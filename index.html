@@ -34,83 +34,88 @@
     background: #f7f7f7;
     display: block;
     touch-action: manipulation;
+    image-rendering: pixelated;
   }
   #hint {
     color: #999;
     font-size: 13px;
-  }
-  #stage {
-    position: relative;
-  }
-  #overlay {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    display: none;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    color: #535353;
-    background: rgba(247,247,247,0.85);
-    font-size: 16px;
     text-align: center;
-    gap: 8px;
+    max-width: 600px;
   }
-  #overlay b { font-size: 22px; }
   #modeTag {
     font-weight: bold;
   }
+  #credit {
+    color: #bbb;
+    font-size: 11px;
+  }
+  #credit a { color: #999; }
 </style>
 </head>
 <body>
 <div id="wrap">
   <h1>🦖 DINO RUNNER — <span id="modeTag">TRYB: KAKTUSY</span></h1>
-  <div id="stage">
-    <canvas id="gameCanvas" width="600" height="200"></canvas>
-    <div id="overlay">
-      <b>GAME OVER</b>
-      <div id="finalScore"></div>
-      <div>Naciśnij SPACJĘ lub dotknij ekranu, aby zagrać ponownie</div>
-    </div>
-  </div>
+  <canvas id="gameCanvas" width="600" height="150"></canvas>
   <div id="hint">SPACJA / STRZAŁKA W GÓRĘ = skok • STRZAŁKA W DÓŁ = kucnięcie • Po ~500 pkt kaktusy zamieniają się w kolczaste arbuzy!</div>
+  <div id="credit">Sprite dinozaura/kaktusów/chmur pochodzi z Chromium (<a href="https://github.com/wayou/t-rex-runner" target="_blank" rel="noopener">wayou/t-rex-runner</a>), BSD-3-Clause, © 牛さん. Reszta gry: własna implementacja.</div>
 </div>
 
 <script>
 (function () {
   const canvas = document.getElementById('gameCanvas');
   const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
   const W = canvas.width, H = canvas.height;
-  const GROUND_Y = 160;
-
-  const overlay = document.getElementById('overlay');
-  const finalScoreEl = document.getElementById('finalScore');
   const modeTag = document.getElementById('modeTag');
 
   const WATERMELON_SCORE_THRESHOLD = 500;
 
   let highScore = parseInt(localStorage.getItem('dinoWatermelonHighScore') || '0', 10);
 
-  let state, dino, obstacles, clouds, groundOffset, score, speed, spawnTimer, running, gameOverFlag, watermelonMode, frame;
+  // ---- Sprite sheet (original Chrome offline-dino sprite, see credit line) ----
+  const sprite = new Image();
+  let spriteLoaded = false;
+  sprite.onload = () => { spriteLoaded = true; };
+  sprite.src = 'assets/trex-sprite-1x.png';
+
+  const SPR = {
+    RESTART:     { x: 2,   y: 2,  w: 36,  h: 32 },
+    CLOUD:       { x: 86,  y: 2,  w: 46,  h: 14 },
+    PTERODACTYL: { x: 134, y: 2,  w: 46,  h: 40 },
+    CACTUS_SMALL:{ x: 228, y: 2,  w: 17,  h: 35 },
+    CACTUS_LARGE:{ x: 332, y: 2,  w: 25,  h: 50 },
+    TEXT:        { x: 484, y: 2 },          // digits 0-9 strip (10px each) + GAME OVER text below
+    TREX:        { x: 678, y: 2 }
+  };
+  const DIGIT_W = 10, DIGIT_H = 13, DIGIT_DEST_W = 11;
+  const GAME_OVER_TEXT = { x: SPR.TEXT.x, y: SPR.TEXT.y + 13, w: 191, h: 11 };
+  const TREX_W = 44, TREX_H = 47, TREX_W_DUCK = 59;
+  const TREX_FRAME = {
+    waiting: [44, 0],
+    running: [88, 132],
+    jumping: [0],
+    crashed: [220],
+    ducking: [264, 323]
+  };
+
+  const GROUND_BASELINE = H - 10; // 140 — bottom of dino / obstacles
+
+  let dino, obstacles, clouds, score, speed, spawnTimer, running, gameOverFlag, watermelonMode, frame;
 
   function resetGame() {
     dino = {
-      x: 50,
-      y: GROUND_Y - 44,
-      w: 40,
-      h: 44,
-      duckH: 26,
+      x: 40,
+      y: GROUND_BASELINE - TREX_H,
       vy: 0,
       jumping: false,
       ducking: false,
-      groundY: GROUND_Y - 44
+      groundY: GROUND_BASELINE - TREX_H
     };
     obstacles = [];
     clouds = [];
     for (let i = 0; i < 3; i++) {
-      clouds.push({ x: Math.random() * W, y: 20 + Math.random() * 50 });
+      clouds.push({ x: Math.random() * W, y: 15 + Math.random() * 40 });
     }
-    groundOffset = 0;
     score = 0;
     speed = 6;
     spawnTimer = 60;
@@ -119,7 +124,6 @@
     watermelonMode = false;
     frame = 0;
     modeTag.textContent = 'TRYB: KAKTUSY';
-    overlay.style.display = 'none';
   }
 
   const GRAVITY = 0.9;
@@ -143,33 +147,35 @@
       obstacles.push({
         type: 'bird',
         x: W + 20,
-        y: [GROUND_Y - 90, GROUND_Y - 55, GROUND_Y - 20][Math.floor(Math.random() * 3)],
-        w: 34,
-        h: 24,
-        wingUp: true
+        y: [GROUND_BASELINE - 90, GROUND_BASELINE - 60, GROUND_BASELINE - 40][Math.floor(Math.random() * 3)],
+        w: SPR.PTERODACTYL.w,
+        h: SPR.PTERODACTYL.h,
+        frame: 0
       });
     } else if (watermelonMode) {
       const size = 34 + Math.random() * 12;
       obstacles.push({
         type: 'watermelon',
         x: W + 20,
-        y: GROUND_Y - size,
+        y: GROUND_BASELINE - size,
         w: size,
         h: size
       });
     } else {
+      const large = Math.random() < 0.5;
       const clusters = Math.random() < 0.3 ? 2 : 1;
       let ox = W + 20;
+      const def = large ? SPR.CACTUS_LARGE : SPR.CACTUS_SMALL;
       for (let i = 0; i < clusters; i++) {
-        const h = 30 + Math.random() * 20;
         obstacles.push({
           type: 'cactus',
+          large,
           x: ox,
-          y: GROUND_Y - h,
-          w: 18,
-          h: h
+          y: GROUND_BASELINE - def.h,
+          w: def.w,
+          h: def.h
         });
-        ox += 22;
+        ox += def.w + 6;
       }
     }
   }
@@ -202,12 +208,9 @@
       dino.jumping = false;
     }
 
-    groundOffset -= speed;
-    if (groundOffset <= -20) groundOffset += 20;
-
     clouds.forEach(c => {
       c.x -= speed * 0.2;
-      if (c.x < -60) { c.x = W + Math.random() * 100; c.y = 20 + Math.random() * 50; }
+      if (c.x < -SPR.CLOUD.w) { c.x = W + Math.random() * 100; c.y = 15 + Math.random() * 40; }
     });
 
     spawnTimer -= 1;
@@ -217,14 +220,18 @@
       if (spawnTimer < 30) spawnTimer = 30;
     }
 
-    obstacles.forEach(o => { o.x -= speed; if (o.type === 'bird' && frame % 10 === 0) o.wingUp = !o.wingUp; });
+    obstacles.forEach(o => {
+      o.x -= speed;
+      if (o.type === 'bird' && frame % 8 === 0) o.frame = 1 - o.frame;
+    });
     obstacles = obstacles.filter(o => o.x + o.w > -10);
 
+    const duckH = 25;
     const dinoBox = {
       x: dino.x + 6,
-      y: dino.ducking ? GROUND_Y - dino.duckH + 4 : dino.y + 4,
-      w: dino.w - 12,
-      h: (dino.ducking ? dino.duckH : dino.h) - 8
+      y: dino.ducking ? (GROUND_BASELINE - duckH) + 4 : dino.y + 4,
+      w: (dino.ducking ? TREX_W_DUCK : TREX_W) - 12,
+      h: (dino.ducking ? duckH : TREX_H) - 8
     };
 
     for (const o of obstacles) {
@@ -244,74 +251,68 @@
       highScore = finalScore;
       localStorage.setItem('dinoWatermelonHighScore', String(highScore));
     }
-    finalScoreEl.textContent = `Wynik: ${finalScore}   |   Rekord: ${highScore}`;
-    overlay.style.display = 'flex';
   }
 
   // ---- Drawing ----
+  function drawClouds() {
+    clouds.forEach(c => {
+      ctx.drawImage(sprite, SPR.CLOUD.x, SPR.CLOUD.y, SPR.CLOUD.w, SPR.CLOUD.h, Math.round(c.x), Math.round(c.y), SPR.CLOUD.w, SPR.CLOUD.h);
+    });
+  }
+
   function drawGround() {
     ctx.strokeStyle = '#535353';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(0, GROUND_Y);
-    ctx.lineTo(W, GROUND_Y);
+    ctx.moveTo(0, GROUND_BASELINE + 2);
+    ctx.lineTo(W, GROUND_BASELINE + 2);
     ctx.stroke();
-    ctx.lineWidth = 1;
-    for (let x = groundOffset; x < W; x += 20) {
-      ctx.beginPath();
-      ctx.moveTo(x, GROUND_Y + 4);
-      ctx.lineTo(x + 8, GROUND_Y + 4);
-      ctx.stroke();
-    }
-  }
-
-  function drawClouds() {
-    ctx.strokeStyle = '#c9c9c9';
-    ctx.lineWidth = 2;
-    clouds.forEach(c => {
-      ctx.beginPath();
-      ctx.moveTo(c.x, c.y);
-      ctx.lineTo(c.x + 30, c.y);
-      ctx.moveTo(c.x + 6, c.y - 6);
-      ctx.lineTo(c.x + 24, c.y - 6);
-      ctx.stroke();
-    });
   }
 
   function drawDino() {
-    ctx.fillStyle = '#535353';
-    if (dino.ducking) {
-      const y = GROUND_Y - dino.duckH;
-      ctx.fillRect(dino.x - 4, y, dino.w + 14, dino.duckH);
-      ctx.fillRect(dino.x + dino.w + 6, y + 4, 10, 8);
-      ctx.fillStyle = '#f7f7f7';
-      ctx.fillRect(dino.x + dino.w + 8, y + 6, 3, 3);
+    let sx, sy, sw, sh, dx, dy, dw, dh;
+    sy = SPR.TREX.y;
+    if (gameOverFlag) {
+      sx = SPR.TREX.x + TREX_FRAME.crashed[0];
+      sw = TREX_W; sh = TREX_H;
+      dx = dino.x; dy = dino.groundY; dw = TREX_W; dh = TREX_H;
+    } else if (dino.jumping) {
+      sx = SPR.TREX.x + TREX_FRAME.jumping[0];
+      sw = TREX_W; sh = TREX_H;
+      dx = dino.x; dy = dino.y; dw = TREX_W; dh = TREX_H;
+    } else if (dino.ducking) {
+      const f = TREX_FRAME.ducking[Math.floor(frame / 8) % 2];
+      sx = SPR.TREX.x + f;
+      sw = TREX_W_DUCK; sh = TREX_H;
+      dx = dino.x; dy = GROUND_BASELINE - 25; dw = TREX_W_DUCK; dh = 25;
+    } else if (running) {
+      const f = TREX_FRAME.running[Math.floor(frame / 6) % 2];
+      sx = SPR.TREX.x + f;
+      sw = TREX_W; sh = TREX_H;
+      dx = dino.x; dy = dino.y; dw = TREX_W; dh = TREX_H;
     } else {
-      const x = dino.x, y = dino.y, w = dino.w, h = dino.h;
-      ctx.fillRect(x, y, w - 10, h);
-      ctx.fillRect(x + w - 18, y - 6, 14, 16);
-      ctx.fillStyle = '#f7f7f7';
-      ctx.fillRect(x + w - 9, y - 2, 3, 3);
-      ctx.fillStyle = '#535353';
-      let legOffset = running && !dino.jumping ? (frame % 20 < 10 ? 0 : 6) : 0;
-      ctx.fillRect(x + 4 + legOffset, y + h - 8, 6, 8);
-      ctx.fillRect(x + w - 20 - legOffset, y + h - 8, 6, 8);
-      ctx.fillRect(x - 6, y + 10, 8, 4);
+      const f = TREX_FRAME.waiting[Math.floor(frame / 20) % 2];
+      sx = SPR.TREX.x + f;
+      sw = TREX_W; sh = TREX_H;
+      dx = dino.x; dy = dino.y; dw = TREX_W; dh = TREX_H;
     }
+    ctx.drawImage(sprite, sx, sy, sw, sh, Math.round(dx), Math.round(dy), dw, dh);
   }
 
   function drawCactus(o) {
-    ctx.fillStyle = '#3f7d3f';
-    ctx.fillRect(o.x + o.w / 2 - 4, o.y, 8, o.h);
-    ctx.fillRect(o.x, o.y + o.h * 0.35, o.w * 0.4, 8);
-    ctx.fillRect(o.x + o.w * 0.6, o.y + o.h * 0.5, o.w * 0.4, 8);
+    const def = o.large ? SPR.CACTUS_LARGE : SPR.CACTUS_SMALL;
+    ctx.drawImage(sprite, def.x, def.y, def.w, def.h, Math.round(o.x), Math.round(o.y), o.w, o.h);
+  }
+
+  function drawBird(o) {
+    const fx = SPR.PTERODACTYL.x + o.frame * SPR.PTERODACTYL.w;
+    ctx.drawImage(sprite, fx, SPR.PTERODACTYL.y, SPR.PTERODACTYL.w, SPR.PTERODACTYL.h, Math.round(o.x), Math.round(o.y), o.w, o.h);
   }
 
   function drawWatermelon(o) {
     const cx = o.x + o.w / 2, cy = o.y + o.h / 2, r = o.w / 2;
     ctx.save();
     ctx.translate(cx, cy);
-    // spikes
     ctx.fillStyle = '#2c6e2c';
     const spikeCount = 10;
     for (let i = 0; i < spikeCount; i++) {
@@ -324,7 +325,6 @@
       ctx.closePath();
       ctx.fill();
     }
-    // body
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.9, 0, Math.PI * 2);
     ctx.fillStyle = '#3f9142';
@@ -337,7 +337,6 @@
       ctx.quadraticCurveTo(i * (r * 0.28) + (i * 4), 0, i * (r * 0.28), r * 0.8);
       ctx.stroke();
     }
-    // angry eyes
     ctx.fillStyle = '#1a1a1a';
     ctx.beginPath();
     ctx.moveTo(-r * 0.35, -r * 0.15);
@@ -352,19 +351,6 @@
     ctx.restore();
   }
 
-  function drawBird(o) {
-    ctx.fillStyle = '#535353';
-    const y = o.wingUp ? o.y - 6 : o.y + 6;
-    ctx.beginPath();
-    ctx.moveTo(o.x, o.y + 10);
-    ctx.lineTo(o.x + 14, y);
-    ctx.lineTo(o.x + 22, o.y + 10);
-    ctx.lineTo(o.x + 34, y);
-    ctx.lineTo(o.x + 20, o.y + 14);
-    ctx.closePath();
-    ctx.fill();
-  }
-
   function drawObstacles() {
     obstacles.forEach(o => {
       if (o.type === 'cactus') drawCactus(o);
@@ -373,22 +359,48 @@
     });
   }
 
+  function drawDigits(value, digits, targetX, targetY) {
+    const str = String(value).padStart(digits, '0');
+    for (let i = 0; i < str.length; i++) {
+      const d = parseInt(str[i], 10);
+      ctx.drawImage(sprite, SPR.TEXT.x + d * DIGIT_W, SPR.TEXT.y, DIGIT_W, DIGIT_H,
+        targetX + i * DIGIT_DEST_W, targetY, DIGIT_W, DIGIT_H);
+    }
+  }
+
   function drawScore() {
+    const scoreX = W - 12 - 5 * DIGIT_DEST_W;
+    drawDigits(Math.floor(score), 5, scoreX, 10);
+    const hiDigitsX = scoreX - 20 - 5 * DIGIT_DEST_W;
+    drawDigits(highScore, 5, hiDigitsX, 10);
     ctx.fillStyle = '#535353';
-    ctx.font = '14px "Courier New", monospace';
+    ctx.font = 'bold 11px "Courier New", monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`WYNIK: ${String(Math.floor(score)).padStart(5, '0')}`, W - 10, 20);
-    ctx.fillText(`REKORD: ${String(highScore).padStart(5, '0')}`, W - 10, 38);
+    ctx.fillText('HI', hiDigitsX - 6, 21);
     ctx.textAlign = 'left';
+  }
+
+  function drawGameOver() {
+    const centerX = W / 2;
+    const textX = Math.round(centerX - GAME_OVER_TEXT.w / 2);
+    const textY = Math.round((H - 25) / 3);
+    ctx.drawImage(sprite, GAME_OVER_TEXT.x, GAME_OVER_TEXT.y, GAME_OVER_TEXT.w, GAME_OVER_TEXT.h,
+      textX, textY, GAME_OVER_TEXT.w, GAME_OVER_TEXT.h);
+    const restartX = Math.round(centerX - SPR.RESTART.w / 2);
+    const restartY = Math.round(H / 2);
+    ctx.drawImage(sprite, SPR.RESTART.x, SPR.RESTART.y, SPR.RESTART.w, SPR.RESTART.h,
+      restartX, restartY, SPR.RESTART.w, SPR.RESTART.h);
   }
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
+    if (!spriteLoaded) return;
     drawClouds();
     drawGround();
     drawObstacles();
     drawDino();
     drawScore();
+    if (gameOverFlag) drawGameOver();
   }
 
   function loop() {
@@ -423,9 +435,6 @@
     } else {
       jump();
     }
-  });
-  overlay.addEventListener('pointerdown', () => {
-    if (!running && gameOverFlag) resetGame();
   });
 
   resetGame();
